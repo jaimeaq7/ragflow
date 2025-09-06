@@ -223,5 +223,4 @@ volumes:
     driver: local
 
 networks:
-  ragflow:
-    driver: bridge
+  ragflow: null

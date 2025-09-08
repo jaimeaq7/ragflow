@@ -1,0 +1,411 @@
+version: '3.8'
+services:
+  ragflow:
+    depends_on:
+      mysql:
+        condition: service_healthy
+    image: 'infiniflow/ragflow:v0.20.4-slim'
+    container_name: ragflow_server
+    restart: on-failure
+    # Example configuration to set up an MCP server:
+    #command:
+    #  - '--enable-mcpserver'
+    #  - '--mcp-host=0.0.0.0'
+    #  - '--mcp-port=9382'
+    #  - '--mcp-base-url=http://127.0.0.1:9380'
+    #  - '--mcp-script-path=/ragflow/mcp/server/server.py'
+    #  - '--mcp-mode=self-host'
+    #  - '--mcp-host-api-key=ragflow-FlNWYwYWMyOGIxNTExZjBiYjRiNmU0Zj'
+    ports:
+      - '9380:9380'
+      - '5678:5678'
+      - '5679:5679'
+    environment:
+      - SERVICE_URL_RAGFLOW_80
+      - SERVICE_URL_RAGFLOW_MCP_9382
+      - 'MYSQL_HOST=${MYSQL_HOST:-mysql}'
+      - 'MYSQL_PORT=${MYSQL_PORT:-5455}'
+      - 'MYSQL_DBNAME=${MYSQL_DBNAME:-rag_flow}'
+      - 'MYSQL_PASSWORD=${SERVICE_PASSWORD_MYSQL}'
+      - 'MYSQL_MAX_PACKET=${MYSQL_MAX_PACKET:-1073741824}'
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
+      - MINIO_HOST=minio
+      - MINIO_PORT=9000
+      - 'MINIO_USER=${SERVICE_USER_MINIO}'
+      - 'MINIO_PASSWORD=${SERVICE_PASSWORD_MINIO}'
+      - 'SVR_HTTP_PORT=${SVR_HTTP_PORT:-9380}'
+      - 'DOC_ENGINE=${DOC_ENGINE:-elasticsearch}'
+      - ES_HOST=es01
+      - ES_PORT=9200
+      - 'ELASTIC_PASSWORD=${SERVICE_PASSWORD_ELASTIC:-infini_rag_flow}'
+      #- 'SECRET_KEY=${SECRET_KEY}'
+      #- 'JWT_SECRET=${JWT_SECRET}'
+      #- 'LLM_MODEL=${LLM_MODEL:-}'
+      #- 'LLM_API_BASE=${LLM_API_BASE:-}'
+      #- 'LLM_API_KEY=${LLM_API_KEY:-}'
+      #- 'EMBEDDING_MODEL=${EMBEDDING_MODEL:-bge-large-zh-v1.5}'
+      #- 'EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}'
+      - 'LOG_LEVEL=${LOG_LEVEL:-INFO}'
+      - 'TZ=${TIMEZONE:-UTC+2}'
+      - 'REGISTER_ENABLED=${REGISTER_ENABLED:-1}'
+      - 'MEM_LIMIT=${MEM_LIMIT:-8073741824}'
+      - 'DOC_BULK_SIZE=${DOC_BULK_SIZE:-4}'
+      - 'EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-16}'
+      #- INFINITY_HOST=infinity
+      #- INFINITY_THRIFT_PORT=23817
+      #- INFINITY_HTTP_PORT=23820
+      #- INFINITY_PSQL_PORT=5432
+    volumes:
+      - 'ragflow_data:/ragflow/data'
+      - 'ragflow_logs:/ragflow/logs'
+      - 'ragflow_uploads:/ragflow/uploads'
+      - 'ragflow_models:/ragflow/models'
+      #/ragflow/conf/service_conf.yaml.template
+      -
+        type: bind
+        source: ./service_conf.yaml.template
+        target: /ragflow/service_conf.yaml.template
+        content: |
+          # ===========================================
+          # CONFIGURACIÓN OFICIAL DE RAGFLOW PARA COOLIFY
+          # ===========================================
+
+          ragflow:
+            host: ${RAGFLOW_HOST:-0.0.0.0}
+            http_port: 9380
+
+          mysql:
+            name: '${MYSQL_DBNAME:-rag_flow}'
+            user: '${MYSQL_USER:-root}'
+            password: '${SERVICE_PASSWORD_MYSQL:-infini_rag_flow}'
+            host: '${MYSQL_HOST:-mysql}'
+            port: '${MYSQL_PORT:-3306}'
+            max_connections: 900
+            stale_timeout: 300
+            max_allowed_packet: ${MYSQL_MAX_PACKET:-1073741824}
+
+          minio:
+            user: '${SERVICE_USER_MINIO:-rag_flow}'
+            password: '${SERVICE_PASSWORD_MINIO:-infini_rag_flow}'
+            host: '${MINIO_HOST:-minio}:9000'
+
+          redis:
+            host: '${REDIS_HOST:-redis}:6379'
+            password: '${SERVICE_PASSWORD_REDIS:-infini_rag_flow}'
+            db: 0
+
+          es:
+            hosts: 'http://${ES_HOST:-es01}:9200'
+            username: '${ES_USER:-elastic}'
+            password: '${SERVICE_PASSWORD_ELASTIC:-infini_rag_flow}'
+
+          
+      -
+        type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+        content: |
+          user  root;
+          worker_processes  auto;
+          error_log  /var/log/nginx/error.log notice;
+          pid        /var/run/nginx.pid;
+
+          events {
+              worker_connections  1024;
+          }
+
+          http {
+              include       /etc/nginx/mime.types;
+              default_type  application/octet-stream;
+              log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                                '$status $body_bytes_sent "$http_referer" '
+                                '"$http_user_agent" "$http_x_forwarded_for"';
+              access_log  /var/log/nginx/access.log  main;
+              sendfile        on;
+              keepalive_timeout  65;
+              client_max_body_size 1024M;
+              include /etc/nginx/conf.d/ragflow.conf;
+          }
+      -
+        type: bind
+        source: ./ragflow.conf
+        target: /etc/nginx/conf.d/ragflow.conf
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              root /ragflow/web/dist;
+
+              gzip on;
+              gzip_min_length 1k;
+              gzip_comp_level 9;
+              gzip_types text/plain application/javascript application/x-javascript text/css application/xml text/javascript application/x-httpd-php image/jpeg image/gif image/png;
+              gzip_vary on;
+              gzip_disable "MSIE [1-6]\.";
+
+              location ~ ^/(v1|api) {
+                  proxy_pass http://ragflow:9380;
+                  include /etc/nginx/proxy.conf;
+              }
+
+              location / {
+                  index index.html;
+                  try_files $uri $uri/ /index.html;
+              }
+
+              location ~ ^/static/(css|js|media)/ {
+                  expires 10y;
+                  access_log off;
+              }
+          }
+      -
+        type: bind
+        source: ./proxy.conf
+        target: /etc/nginx/proxy.conf
+        content: |
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          proxy_buffering off;
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+          proxy_buffer_size 1024k;
+          proxy_buffers 16 1024k;
+          proxy_busy_buffers_size 2048k;
+          proxy_temp_file_write_size 2048k;
+    
+    networks:
+      - ragflow_network
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://localhost:80/health'
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+
+  kibana:
+    image: 'docker.elastic.co/kibana/kibana:8.11.3'
+    container_name: ragflow-kibana
+    restart: unless-stopped
+    environment:
+      - SERVICE_URL_KIBANA_5601
+      - 'ELASTICSEARCH_HOSTS=http://es01:9200'
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - 'ELASTICSEARCH_PASSWORD=${SERVICE_PASSWORD_KIBANA}'
+      - XPACK_SECURITY_ENABLED=false
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+      - XPACK_SECURITY_ENCRYPTIONKEY=a7a6311933d3503b89bc2dbc2e7b736e
+      - SERVER_SSL_ENABLED=false
+    depends_on:
+      es01:
+        condition: service_healthy
+    networks:
+      - ragflow_network
+  es01:
+    image: 'elasticsearch:8.11.3'
+    container_name: ragflow-es-01
+    restart: on-failure
+    environment:
+      #- SERVICE_URL_ES01_9200
+      - node.name=es01
+      - 'ELASTIC_PASSWORD=${SERVICE_PASSWORD_ELASTIC}'
+      - bootstrap.memory_lock=false
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - cluster.routing.allocation.disk.watermark.low=5gb
+      - cluster.routing.allocation.disk.watermark.high=3gb
+      - cluster.routing.allocation.disk.watermark.flood_stage=2gb
+      - 'TZ=${TIMEZONE:-UTC+2}'
+      - 'KIBANA_PORT=${KIBANA_PORT:-6601}'
+      - 'KIBANA_USER=${KIBANA_USER:-kibana_system}'
+      - 'KIBANA_PASSWORD=${SERVICE_PASSWORD_KIBANA:-infini_rag_flow}'
+    mem_limit: '${MEM_LIMIT:-8073741824}'
+    volumes:
+      - 'esdata01:/usr/share/elasticsearch/data'
+    networks:
+      - ragflow_network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl http://localhost:9200'
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+      
+#  infinity:
+#    image: 'infiniflow/infinity:v0.6.0-dev5'
+#    container_name: ragflow-infinity
+#    restart: on-failure
+#    environment:
+#      - SERVICE_URL_INFINITY_23817
+#      - 'TZ=${TIMEZONE:-UTC+2}'
+#    ports:
+#      - '23817:23817'
+#    volumes:
+#      - 'infinity_data:/var/infinity'
+#      -
+#        type: bind
+#        source: ./infinity_conf.toml
+#        target: /infinity_conf.toml
+#        content: |
+#          [general]
+#          version = "0.6.0"
+#          time_zone = "utc-8"
+#
+#          [network]
+#          server_address = "0.0.0.0"
+#          postgres_port = 5432
+#          http_port = 23820
+#          client_port = 23817
+#          connection_pool_size = 128
+#
+#          [log]
+#          log_filename = "infinity.log"
+#          log_dir = "/var/infinity/log"
+#          log_to_stdout = true
+#          log_file_max_size = "100MB"
+#          log_file_rotate_count = 10
+#          log_level = "trace"
+#
+#          [storage]
+#          persistence_dir = "/var/infinity/persistence"
+#          data_dir = "/var/infinity/data"
+#          optimize_interval = "10s"
+#          cleanup_interval = "60s"
+#          compact_interval = "120s"
+#          storage_type = "local"
+#          mem_index_capacity = 65536
+#
+#          [buffer]
+#          buffer_manager_size = "8GB"
+#          lru_num = 7
+#          temp_dir = "/var/infinity/tmp"
+#          result_cache = "off"
+#          memindex_memory_quota = "1GB"
+#
+#          [wal]
+#          wal_dir = "/var/infinity/wal"
+#
+#          [resource]
+#          resource_dir = "/var/infinity/resource"
+#    networks:
+#      - ragflow_network
+#    mem_limit: '${MEM_LIMIT:-8073741824}'
+#    healthcheck:
+#      test: ["CMD", "curl", "http://localhost:23820/admin/node/current"]
+#      interval: 10s
+#      timeout: 10s
+#      retries: 120
+  mysql:
+    image: 'mysql:8.0.39'
+    container_name: ragflow-mysql
+    restart: on-failure
+    environment:
+      - 'MYSQL_ROOT_PASSWORD=${SERVICE_PASSWORD_MYSQL}'
+      - 'TZ=${TIMEZONE:-UTC+2}'
+    command:
+      - '--max_connections=1000'
+      - '--character-set-server=utf8mb4'
+      - '--collation-server=utf8mb4_unicode_ci'
+      - '--default-authentication-plugin=mysql_native_password'
+      - '--tls_version=TLSv1.2,TLSv1.3'
+      - '--binlog_expire_logs_seconds=604800'
+      - '--init-file=/data/application/init.sql'
+    volumes:
+      - 'mysql_data:/var/lib/mysql'
+      -
+        type: bind
+        source: ./init.sql
+        target: /data/application/init.sql
+        content: |
+          CREATE DATABASE IF NOT EXISTS rag_flow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          USE rag_flow;
+    networks:
+      - ragflow_network
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - '-uroot'
+        - '-p${SERVICE_PASSWORD_MYSQL}'
+      interval: 10s
+      timeout: 10s
+      retries: 3
+  redis:
+    image: 'valkey/valkey:8'
+    container_name: ragflow-redis
+    restart: on-failure
+    command: 'redis-server --requirepass ${SERVICE_PASSWORD_REDIS} --maxmemory 128mb --maxmemory-policy allkeys-lru'
+    volumes:
+      - 'redis_data:/data'
+    networks:
+      - ragflow_network
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - '-a'
+        - '${REDIS_PASSWORD}'
+        - ping
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+  minio:
+    image: 'quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z'
+    container_name: ragflow-minio
+    restart: on-failure
+    command: 'server --console-address ":9001" /data'
+    environment:
+     # - SERVICE_URL_MINIOCONSOLE_9001
+      - 'MINIO_ROOT_USER=${SERVICE_USER_MINIO}'
+      - 'MINIO_ROOT_PASSWORD=${SERVICE_PASSWORD_MINIO}'
+      - 'TZ=${TIMEZONE:-UTC+2}'
+    volumes:
+      - 'minio_data:/data'
+    networks:
+      - ragflow_network
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://localhost:9000/minio/health/live'
+      interval: 30s
+      timeout: 20s
+      retries: 3
+volumes:
+  ragflow_data:
+    driver: local
+  ragflow_logs:
+    driver: local
+  ragflow_uploads:
+    driver: local
+  ragflow_models:
+    driver: local
+  esdata01:
+    driver: local
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+  infinity_data:
+    driver: local
+networks:
+  ragflow_network: null
